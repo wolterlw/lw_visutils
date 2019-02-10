@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import numpy as np
 
 def conv3x3(in_planes, out_planes, stride=1):
     return nn.Conv2d(in_planes, out_planes, kernel_size=3, stride=stride,
@@ -45,6 +46,40 @@ def LinConv(n_in, n_out):
             nn.ReLU(True)
         )
 
+class SimpleHourglass(nn.Module):
+    def __init__(self, n_in, n_out, n):
+        super(SimpleHourglass, self).__init__()
+        
+        self.upper_branch = nn.Sequential(
+            ResBlock(n_in, 256),
+            # ResBlock(256, 256),
+            ResBlock(256, n_out)
+        )
+        
+        self.lower_branch = nn.Sequential(
+            nn.MaxPool2d(2, stride=2),
+            ResBlock(n_in, 256),
+            # ResBlock(256, 256),
+            ResBlock(256, 256)
+        )
+        
+        if n > 1:
+            self.inter = SimpleHourglass(n_in, n_out, n-1)
+        else:
+            self.inter = ResBlock(256, n_out)
+        self.last = ResBlock(n_out, n_out)
+        self.laster = conv1x1(2*n_out, n_out)
+        
+    def forward(self, x):
+        upper = self.upper_branch(x)
+        lower = self.lower_branch(x)
+        lower = self.inter(lower)
+        lower = self.last(lower)
+        lower = F.interpolate(lower, scale_factor=2)
+        out = torch.cat((lower,upper),dim=1)
+        out = self.laster(out)
+        return out
+
 class Hourglass(nn.Module):
     def __init__(self, n_in, n_out, n):
         super(Hourglass, self).__init__()
@@ -73,7 +108,7 @@ class Hourglass(nn.Module):
         lower = self.inter(lower)
         lower = self.last(lower)
         lower = F.interpolate(lower, scale_factor=2)
-        return upper + lower
+        return 0.8*upper + 0.2*lower
 
 def torchMaxCoords(hmap):
     idxs = hmap.view(*hmap.shape[:2], -1).max(dim=-1)[1]
@@ -88,9 +123,33 @@ def torchPCK(hmap_pred, hmap_true, threshold=5):
     dist = torch.sqrt((diff ** 2).sum(dim=-1).float())
     return (dist < threshold).view(-1).float().mean().item()
 
-# def PCK(hmap_pred, hmap_true, threshold=5):
-#     coords_true = maxCoords(hmap_true)
-#     coords_pred = maxCoords(hmap_pred)
-#     diff = coords_pred - coords_true
-#     dist = np.sqrt((diff ** 2).sum(axis=-1))
-#     return (dist < threshold).mean()
+
+class SoftArgmax(nn.Module):
+    def __init__(self, img_shape):
+        super(SoftArgmax, self).__init__()
+        dim = img_shape[0]
+        X,Y = np.meshgrid(
+            range(1, dim+1),
+            range(1, dim+1)
+        )
+        X = torch.from_numpy(X / dim).type(torch.FloatTensor)
+        Y = torch.from_numpy(Y / dim).type(torch.FloatTensor)
+        
+        self.Wx = torch.nn.Parameter(X.view(1,-1))
+        self.Wy = torch.nn.Parameter(Y.view(1,-1))
+        self.d = 1/dim
+        
+    def forward(self, x):
+        sm = F.softmax(
+            x.flatten(start_dim=2), dim=2
+        )
+        coord_x = torch.bmm(self.Wx.expand_as(sm),
+                            sm.transpose(2, 1)) - self.d
+        coord_y = torch.bmm(self.Wy.expand_as(sm),
+                            sm.transpose(2, 1)) - self.d
+
+        coords = torch.stack([
+            coord_y.view(-1, 1),
+            coord_x.view(-1, 1)],
+            dim = -1)
+        return coords

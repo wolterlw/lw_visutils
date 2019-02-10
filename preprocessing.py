@@ -140,7 +140,9 @@ class RHDDataset(Dataset):
 
 class Normalize(object):
 	def __call__(self, sample):
-		sample['img'] = sample['img'].astype('float32') / 255
+		mean = np.r_[[0.485, 0.456, 0.406]]
+		std  = np.r_[[0.229, 0.224, 0.225]]
+		sample['img'] = (sample['img'].astype('float32') / 255 - mean) / std
 		sample['hmap'] = sample['hmap'].astype('float32') / sample['hmap'].max()
 		return sample
     
@@ -265,6 +267,15 @@ class ToTensor(object):
 			'hmap': torch.from_numpy(hmap).type(torch.float32),
 			'mask': torch.from_numpy(mask).type(torch.float32)
 		}
+
+def AddMaxCoords(sample):
+    idxs = sample['hmap'].view(sample['hmap'].shape[0], -1).max(dim=-1)[1]
+    xs = idxs % 128
+    ys = idxs // 128
+    coords = torch.stack([ys,xs], dim=-1)
+    sample['coords'] = coords.type(torch.FloatTensor) / 128
+    return sample
+
 
 class ToNparray(object):
 	"""
