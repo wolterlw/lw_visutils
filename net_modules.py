@@ -150,31 +150,29 @@ def coordPCK(threshold=5):
 
 
 class SoftArgmax(nn.Module):
-	def __init__(self, img_shape):
-		super().__init__()
-		dim = img_shape
-		X,Y = np.meshgrid(
-			range(1, dim+1),
-			range(1, dim+1)
-		)
-		X = torch.from_numpy(X / dim).type(torch.FloatTensor)
-		Y = torch.from_numpy(Y / dim).type(torch.FloatTensor)
-		
-		self.Wx = torch.nn.Parameter(X.view(1,-1))
-		self.Wy = torch.nn.Parameter(Y.view(1,-1))
-		self.d = 1/dim
-		
-	def forward(self, x):
-		sm = F.softmax(
-			x.flatten(start_dim=2), dim=2
-		)
-		coord_x = torch.bmm(self.Wx.expand_as(sm),
-							sm.transpose(2, 1)) - self.d
-		coord_y = torch.bmm(self.Wy.expand_as(sm),
-							sm.transpose(2, 1)) - self.d
+    def __init__(self, img_shape):
+        super().__init__()
+        dim = img_shape
+        X,Y = np.meshgrid(
+            range(1, dim+1),
+            range(1, dim+1)
+        )
+        X = torch.from_numpy(X / dim).type(torch.FloatTensor)
+        Y = torch.from_numpy(Y / dim).type(torch.FloatTensor)
 
-		coords = torch.stack([
-			coord_y.view(-1, 1),
-			coord_x.view(-1, 1)],
-			dim = -1)
-		return coords
+        self.Wx = torch.nn.Parameter(X.view(1,-1))
+        self.Wy = torch.nn.Parameter(Y.view(1,-1))
+        self.d = 1/dim
+
+    def forward(self, x):
+        sm = F.softmax(
+            x.flatten(start_dim=2), dim=2
+        )
+        coord_x = (self.Wx.expand_as(sm) * sm).sum(dim=2) - self.d
+        coord_y = (self.Wy.expand_as(sm) * sm).sum(dim=2) - self.d
+
+        coords = torch.stack([
+            coord_y,
+            coord_x],
+            dim = -1)
+        return coords
