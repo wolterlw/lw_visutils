@@ -1,8 +1,10 @@
 import os
 import pickle
+import pathlib
 
 import numpy as np
 import cv2
+from skimage import io #TODO: delete 
 from scipy import ndimage 
 import random
 
@@ -38,13 +40,13 @@ class Hand():
 			'pinky': self.array[17:21],
 		}
 	
-	def draw(self):
+	def draw(self, axis):
 		for k in self.joints.keys():
-			plt.plot(
+			axis.plot(
 				self.joints[k][:,0],
 				self.joints[k][:,1],
 				c=self.colormap[k])
-			plt.plot([self.joints['wrist'][0,0],self.joints[k][-1,0]],
+			axis.plot([self.joints['wrist'][0,0],self.joints[k][-1,0]],
 					 [self.joints['wrist'][0,1],self.joints[k][-1,1]],
 					 c=self.colormap[k])
 			
@@ -68,9 +70,9 @@ class HDFDataset():
     def __init__(self, file_path, dset='train', transform=None):
         assert dset in {'train','val'}
         hdf_file = h5py.File(file_path, 'r')
-        self.X = hdf_file['X_' + dset][:1000]#[()]
-        self.y = hdf_file['y_' + dset][:1000]#[()]
-        self.masks = hdf_file['Mask_'+ dset][:1000]#[()]
+        self.X = hdf_file['X_' + dset][()]
+        self.y = hdf_file['y_' + dset][()]
+        self.masks = hdf_file['Mask_'+ dset][()]
         self.trns = transform
     
     def __len__(self):
@@ -137,6 +139,54 @@ class RHDDataset(Dataset):
 			sample = self.transform(sample)
 		return sample
 
+class GANeratedDataset(Dataset):
+    """
+    Dataset class that loads joint coordinates on initialization and
+    provides functionality to load images and construct training samples
+    on the fly
+    """
+    _joint_reindex = [0, 4, 3, 2, 1, 8, 7, 6, 5, 12, 11, 10, 9, 16, 15, 14, 13, 20, 19, 18, 17]
+    
+    def __init__(self, root_dir, transform=None, preload_coords=False):
+        super(GANeratedDataset, self).__init__()
+        self.root_dir = pathlib.Path(root_dir).joinpath('data/noObject').expanduser()
+        
+        self.joint_path = sorted([x.as_posix() for x in self.root_dir.glob('./*/*_joint2D.txt')])
+        self.image_path = sorted([x.as_posix() for x in self.root_dir.glob('./*/*.png')])
+        
+        assert len(self.joint_path) == len(self.image_path), "joint-image mismatch"
+        
+        self.transform = transform
+        
+        if preload_coords:
+            self.all_coords = [self._read_joints(x) for x in self.joint_path]
+        
+        
+    @classmethod
+    def _read_joints(cls, filename):
+        with open(filename,'r') as f:
+            content = f.readline()
+        joint_arr = [float(x) for x in content.replace('\n','').split(',')]
+        assert len(joint_arr) == 42, filename
+        joints = np.r_[joint_arr].reshape(21,2)
+        return joints[cls._joint_reindex]
+            
+    def __len__(self):
+        return len(self.joint_path)
+
+    def __getitem__(self, idx):
+        image = io.imread(self.image_path[idx])
+        coords = self.all_coords[idx] \
+        	if self.all_coords else self._read_joints(self.joint_path[idx])
+        
+        sample = {
+            'img': image,
+            'coords': coords,
+        }
+
+        if self.transform:
+            sample = self.transform(sample)
+        return sample
 
 class Normalize(object):
 	def __call__(self, sample):
@@ -157,7 +207,7 @@ class Coords2Hmap():
 		hmap[coords[:,0],
 			coords[:,1],
 			np.arange(21)] = 10
-		sample['hmap'] = cv2.GaussianBlur(hmap, (15, 15), self.sigma)
+		sample['hmap'] = cv2.GaussianBlur(hmap, (35, 35), self.sigma)
 		return sample
 
 
@@ -208,7 +258,7 @@ class Rotate():
 	def __call__(self, sample):
 		angle = random.uniform(*self.rotation_range)
 		for ent in ['img', 'hmap', 'mask']:
-			sample[ent] = ndimage.rotate(sample[ent], angle, reshape=False)
+			sample[ent] = np.abs(ndimage.rotate(sample[ent], angle, reshape=False))
 		return sample
 
 class CenterNCrop():
