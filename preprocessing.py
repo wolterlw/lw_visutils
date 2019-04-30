@@ -72,7 +72,7 @@ class HDFDataset():
         hdf_file = h5py.File(file_path, 'r')
         self.X = hdf_file['X_' + dset][()]
         self.y = hdf_file['y_' + dset][()]
-        self.masks = hdf_file['Mask_'+ dset][()]
+        # self.masks = hdf_file['Mask_'+ dset][()]
         self.trns = transform
     
     def __len__(self):
@@ -82,7 +82,7 @@ class HDFDataset():
         sample = {
             'img': self.X[idx],
             'coords': self.y[idx],
-            'mask': self.masks[idx]
+            # 'mask': self.masks[idx]
         }
         return self.trns(sample) if self.trns else sample
 
@@ -149,7 +149,7 @@ class GANeratedDataset(Dataset):
     
     def __init__(self, root_dir, transform=None, preload_coords=False):
         super(GANeratedDataset, self).__init__()
-        self.root_dir = pathlib.Path(root_dir).joinpath('data/noObject').expanduser()
+        self.root_dir = pathlib.Path(root_dir).expanduser()
         
         self.joint_path = sorted([x.as_posix() for x in self.root_dir.glob('./*/*_joint2D.txt')])
         self.image_path = sorted([x.as_posix() for x in self.root_dir.glob('./*/*.png')])
@@ -168,7 +168,7 @@ class GANeratedDataset(Dataset):
             content = f.readline()
         joint_arr = [float(x) for x in content.replace('\n','').split(',')]
         assert len(joint_arr) == 42, filename
-        joints = np.r_[joint_arr].reshape(21,2)
+        joints = np.r_[joint_arr].reshape(21,2)[:,::-1]
         return joints[cls._joint_reindex]
             
     def __len__(self):
@@ -189,24 +189,31 @@ class GANeratedDataset(Dataset):
         return sample
 
 class Normalize(object):
+	def __init__(self, hmap=True):
+		self.hmap = hmap
+
 	def __call__(self, sample):
 		mean = np.r_[[0.485, 0.456, 0.406]]
 		std  = np.r_[[0.229, 0.224, 0.225]]
 		sample['img'] = (sample['img'].astype('float32') / 255 - mean) / std
-		sample['hmap'] = sample['hmap'].astype('float32') / sample['hmap'].max()
+		if self.hmap:
+			sample['hmap'] = sample['hmap'].astype('float32') / sample['hmap'].max()
 		return sample
     
 class Coords2Hmap():
-	def __init__(self, sigma):
+	def __init__(self, sigma, shape=(128,128), coords_scaling=1):
 		self.sigma = sigma
+		self.hmap_shape = shape
+		self.c_scale = coords_scaling
 
 	def __call__(self, sample):
-		img_shape = sample['img'].shape[:2]
-		hmap = np.zeros((*img_shape, 21),'float32')
+		hmap = np.zeros((*self.hmap_shape, 21),'float32')
 		coords = sample['coords']
-		hmap[coords[:,0],
-			coords[:,1],
-			np.arange(21)] = 10
+		
+		hmap[np.clip((coords[:,0] * self.c_scale).astype('uint'), 0, self.hmap_shape[0]-1),
+			 np.clip((coords[:,1] * self.c_scale).astype('uint'),0, self.hmap_shape[1]-1),
+			 np.arange(21)] = 10
+		
 		sample['hmap'] = cv2.GaussianBlur(hmap, (35, 35), self.sigma)
 		return sample
 
@@ -252,12 +259,13 @@ class Rotate():
 	"""
 	Rotate both image and heatmaps on a random angle from rotation_range,
 	"""
-	def __init__(self, rotation_range=(-25,25)):
+	def __init__(self, rotation_range=(-25,25), keys=['img','hmap','mask']):
+		self._keys = keys
 		self.rotation_range = rotation_range
 		
 	def __call__(self, sample):
 		angle = random.uniform(*self.rotation_range)
-		for ent in ['img', 'hmap', 'mask']:
+		for ent in self._keys:
 			sample[ent] = np.abs(ndimage.rotate(sample[ent], angle, reshape=False))
 		return sample
 
@@ -305,18 +313,14 @@ class ToTensor(object):
 	"""
 	convert ndarrays in sample to Tensors
 	"""
+	def __init__(self, keys=['img','hmap','mask']):
+		self._keys = keys
+
 	def __call__(self, sample):
-		img, hmap, mask = sample['img'], sample['hmap'], sample['mask']
-
-		img = img.transpose((2,0,1))
-		hmap = hmap.transpose((2,0,1))
-		mask = mask.transpose((2,0,1))
-
-		return {
-			'img': torch.from_numpy(img).type(torch.float32),
-			'hmap': torch.from_numpy(hmap).type(torch.float32),
-			'mask': torch.from_numpy(mask).type(torch.float32)
-		}
+		for k in self._keys:
+			x = sample[k].transpose((2,0,1))
+			sample[k] = torch.from_numpy(x).type(torch.float32)
+		return sample
 
 def AddMaxCoords(sample):
     idxs = sample['hmap'].view(sample['hmap'].shape[0], -1).max(dim=-1)[1]
