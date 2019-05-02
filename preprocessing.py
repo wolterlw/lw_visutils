@@ -1,17 +1,19 @@
 import os
 import pickle
 import pathlib
+import re
 
 import numpy as np
 import cv2
 from skimage import io #TODO: delete 
-from scipy import ndimage 
+from scipy.io import loadmat
 import random
 
 import torch
 from torch.utils.data import Dataset
 
 import h5py
+from tqdm import tqdm
 
 
 class Hand():
@@ -66,26 +68,27 @@ class Hand():
 		radius = np.sqrt(((max_ - center)**2).sum())
 		return center, radius
 
-class HDFDataset():
-    def __init__(self, file_path, dset='train', transform=None):
-        assert dset in {'train','val'}
-        hdf_file = h5py.File(file_path, 'r')
-        self.X = hdf_file['X_' + dset][()]
-        self.y = hdf_file['y_' + dset][()]
-        # self.masks = hdf_file['Mask_'+ dset][()]
-        self.trns = transform
-    
-    def __len__(self):
-        return len(self.X)
-    
-    def __getitem__(self, idx):
-        sample = {
-            'img': self.X[idx],
-            'coords': self.y[idx],
-            # 'mask': self.masks[idx]
-        }
-        return self.trns(sample) if self.trns else sample
+# =============================== DATASET WRAPPERS ==================================
 
+class HDFDataset():
+	def __init__(self, file_path, dset='train', transform=None):
+		assert dset in {'train','val'}
+		hdf_file = h5py.File(file_path, 'r')
+		self.X = hdf_file['X_' + dset][()]
+		self.y = hdf_file['y_' + dset][()]
+		# self.masks = hdf_file['Mask_'+ dset][()]
+		self.trns = transform
+	
+	def __len__(self):
+		return len(self.X)
+	
+	def __getitem__(self, idx):
+		sample = {
+			'img': self.X[idx],
+			'coords': self.y[idx],
+			# 'mask': self.masks[idx]
+		}
+		return self.trns(sample) if self.trns else sample
 
 class RHDDataset(Dataset):
 	"""
@@ -126,13 +129,12 @@ class RHDDataset(Dataset):
 			str(hand.img_idx).zfill(5) + '.png')
 			
 		img = cv2.imread(img_name)[:,:,::-1]
-		mask = cv2.imread(mask_name,0)[:,:,None]
+		mask = cv2.imread(mask_name,0)
 		
 		sample = {
 			'img': img,
-			'hand': hand,
+			'coords': hand.array[:,::-1],
 			'mask': mask,
-			'hmap': hand.getHeatmap(img.shape)
 		}
 	
 		if self.transform:
@@ -140,55 +142,128 @@ class RHDDataset(Dataset):
 		return sample
 
 class GANeratedDataset(Dataset):
-    """
-    Dataset class that loads joint coordinates on initialization and
-    provides functionality to load images and construct training samples
-    on the fly
-    """
-    _joint_reindex = [0, 4, 3, 2, 1, 8, 7, 6, 5, 12, 11, 10, 9, 16, 15, 14, 13, 20, 19, 18, 17]
-    
-    def __init__(self, root_dir, transform=None, preload_coords=False):
-        super(GANeratedDataset, self).__init__()
-        self.root_dir = pathlib.Path(root_dir).expanduser()
-        
-        self.joint_path = sorted([x.as_posix() for x in self.root_dir.glob('./*/*_joint2D.txt')])
-        self.image_path = sorted([x.as_posix() for x in self.root_dir.glob('./*/*.png')])
-        
-        assert len(self.joint_path) == len(self.image_path), "joint-image mismatch"
-        
-        self.transform = transform
-        
-        if preload_coords:
-            self.all_coords = [self._read_joints(x) for x in self.joint_path]
-        
-        
-    @classmethod
-    def _read_joints(cls, filename):
-        with open(filename,'r') as f:
-            content = f.readline()
-        joint_arr = [float(x) for x in content.replace('\n','').split(',')]
-        assert len(joint_arr) == 42, filename
-        joints = np.r_[joint_arr].reshape(21,2)[:,::-1]
-        return joints[cls._joint_reindex]
-            
-    def __len__(self):
-        return len(self.joint_path)
+	"""
+	Dataset class that loads joint coordinates on initialization and
+	provides functionality to load images and construct training samples
+	on the fly
+	"""
+	_joint_reindex = [0, 4, 3, 2, 1, 8, 7, 6, 5, 12, 11, 10, 9, 16, 15, 14, 13, 20, 19, 18, 17]
+	
+	def __init__(self, root_dir, transform=None, preload_coords=False):
+		super(GANeratedDataset, self).__init__()
+		self.root_dir = pathlib.Path(root_dir).expanduser()
+		
+		self.joint_path = sorted([x.as_posix() for x in self.root_dir.glob('./*/*_joint2D.txt')])
+		self.image_path = sorted([x.as_posix() for x in self.root_dir.glob('./*/*.png')])
+		
+		assert len(self.joint_path) == len(self.image_path), "joint-image mismatch"
+		
+		self.transform = transform
+		
+		if preload_coords:
+			self.all_coords = [self._read_joints(x) for x in tqdm(self.joint_path)]
+		
+		
+	@classmethod
+	def _read_joints(cls, filename):
+		with open(filename,'r') as f:
+			content = f.readline()
+		joint_arr = [float(x) for x in content.replace('\n','').split(',')]
+		assert len(joint_arr) == 42, filename
+		joints = np.r_[joint_arr].reshape(21,2)[:,::-1]
+		return joints[cls._joint_reindex]
+			
+	def __len__(self):
+		return len(self.joint_path)
 
-    def __getitem__(self, idx):
-        image = io.imread(self.image_path[idx])
-        coords = self.all_coords[idx] \
-        	if self.all_coords else self._read_joints(self.joint_path[idx])
-        
-        sample = {
-            'img': image,
-            'coords': coords,
-        }
+	def __getitem__(self, idx):
+		image = io.imread(self.image_path[idx])
+		coords = self.all_coords[idx] \
+			if self.all_coords else self._read_joints(self.joint_path[idx])
+		
+		sample = {
+			'img': image,
+			'coords': coords,
+		}
 
-        if self.transform:
-            sample = self.transform(sample)
-        return sample
+		if self.transform:
+			sample = self.transform(sample)
+		return sample
 
-class Normalize(object):
+class STDDatasetRAW(Dataset):
+	def __init__(self, root_folder='~/my_data/STD', subset='B1Random', transforms=None):
+
+		self.transforms = transforms
+		self.K = np.r_[
+			[[607.92271,0,314.78337]
+			,[0,607.88192,236.42484]
+			,[0,0,1]]
+		]
+		self.T = np.r_[[-24.0381, -0.4563, -1.2326]]
+		
+		rV = np.r_[[0.00531, -0.01196, 0.00301]]
+		self.R = self._getR(rV)
+		
+		self.root_dir = pathlib.Path(root_folder).expanduser()
+		self.img_files = sorted(
+			self.root_dir.joinpath(subset).glob('./SK_color*.png'),
+			key=lambda x: int(re.findall('[0-9]+', x.name)[0])
+		)
+		data_file = self.root_dir.joinpath('labels/' + subset + '_SK.mat')
+		joint_data = loadmat(data_file.as_posix())
+		self.joints3D = self._align3D(joint_data['handPara'].transpose(2,1,0))
+		
+		tmp_coords = np.arange(21)
+		self.reidx_coords = np.concatenate(
+			[tmp_coords[:1]]
+			+ [tmp_coords[f+3:f-1:-1] for f in [17,13,9,5,1]]
+		)
+		
+	def __len__(self):
+		return len(self.joints3D)
+				
+	@staticmethod
+	def _getR(rV):
+		Wx = np.zeros((3,3))
+		Wx[1,2] = -1
+		Wx[2,1] = 1
+
+		Wy = np.zeros((3,3))
+		Wy[0,2] = 1
+		Wy[2,0] = -1
+
+		Wz = np.zeros((3,3))
+		Wz[0,1] = -1
+		Wz[1,0] = 1
+		
+		Rx = np.eye(3) + Wx * np.sin(rV[0]) + Wx**2 * (1-np.cos(rV[0]))
+		Ry = np.eye(3) + Wy * np.sin(rV[1]) + Wy**2 * (1-np.cos(rV[1]))
+		Rz = np.eye(3) + Wz * np.sin(rV[2]) + Wz**2 * (1-np.cos(rV[2]))
+		return Rx @ Ry @ Rz
+		
+		
+	def _align3D(self, points):
+		rotated = (points @ self.R)
+		translated = (rotated - self.T[np.newaxis, np.newaxis, :])
+		return translated
+	
+	def _project(self, points):
+		points = points @ self.K.T
+		normalized = points[:,:2] / points[:,2:]
+		assert np.all(normalized > 0), "negative coords"
+		return normalized.round().astype('uint16')
+	
+	def __getitem__(self, idx):
+		img = io.imread(self.img_files[idx])
+		points = self._project(self.joints3D[idx])[:,::-1]
+		points = points[self.reidx_coords,:]
+
+		sample = {'img': img, 'coords': points}
+		return self.transforms(sample) if self.transforms else sample
+
+# ============================== PREPROCESSING METHODS ==============================
+
+class NormalizeMeanStd(object):
 	def __init__(self, hmap=True):
 		self.hmap = hmap
 
@@ -199,7 +274,17 @@ class Normalize(object):
 		if self.hmap:
 			sample['hmap'] = sample['hmap'].astype('float32') / sample['hmap'].max()
 		return sample
-    
+
+class NormalizeMax(object):
+	def __init__(self, hmap=True):
+		self.hmap = hmap
+
+	def __call__(self, sample):
+		sample['img'] = sample['img'].astype('float32') / 255
+		if self.hmap:
+			sample['hmap'] = sample['hmap'].astype('float32') / sample['hmap'].max()
+		return sample
+	
 class Coords2Hmap():
 	def __init__(self, sigma, shape=(128,128), coords_scaling=1):
 		self.sigma = sigma
@@ -216,98 +301,87 @@ class Coords2Hmap():
 		
 		sample['hmap'] = cv2.GaussianBlur(hmap, (35, 35), self.sigma)
 		return sample
-
-
-class RotateNCrop():
-	"""
-	Rotate both image and heatmaps on a random angle from rotation_range,
-	crop from in_size to out_size around the hand
-	"""
-	def __init__(self, rotation_range=(-45,45), in_size=320, out_size=128):
-		self.rotation_range = rotation_range
-		self.in_size = in_size
-		self.out_size = out_size					  
-
-	def __call__(self, sample):
-		img, hand, heatmap = sample['img'], sample['hand'], sample['hmap']
+	
+# class Rotate():
+# 	"""
+# 	Rotate both image and heatmaps on a random angle from rotation_range,
+# 	"""
+# 	def __init__(self, rotation_range=(-25,25), keys=['img','hmap','mask']):
+# 		self._keys = keys
+# 		self.rotation_range = rotation_range
 		
-		assert hand.fully_visible, "processing a hand that's not fully visible"
-		cnt, rad = hand.getCircle()
-
-		img_cnt = self.in_size // 2
-		scale = 1 if rad < 70 else 70/rad
-		angle = np.random.randint(*self.rotation_range)
-		
-		matr = cv2.getRotationMatrix2D(tuple(cnt), angle, scale)
-		matr[:,2] += img_cnt - cnt
-		window = slice(img_cnt - self.out_size//2,
-					   img_cnt + self.out_size//2)
-
-		block = cv2.warpAffine(
-					np.c_[mask, img, heatmap], matr, #done to prevent images from rotatig differently
-					(self.in_size, self.in_size),
-					borderMode=cv2.BORDER_REPLICATE,
-					flags=cv2.INTER_
-					).astype('float32')
-
-		sample['mask'] = block[window, window, :1]
-		sample['img'] = block[window,window,1:4]
-		sample['hmap'] = block[window,window,4:]
-		return sample
-    
-class Rotate():
-	"""
-	Rotate both image and heatmaps on a random angle from rotation_range,
-	"""
-	def __init__(self, rotation_range=(-25,25), keys=['img','hmap','mask']):
-		self._keys = keys
-		self.rotation_range = rotation_range
-		
-	def __call__(self, sample):
-		angle = random.uniform(*self.rotation_range)
-		for ent in self._keys:
-			sample[ent] = np.abs(ndimage.rotate(sample[ent], angle, reshape=False))
-		return sample
+# 	def __call__(self, sample):
+# 		angle = random.uniform(*self.rotation_range)
+# 		for ent in self._keys:
+# 			sample[ent] = np.abs(ndimage.rotate(sample[ent], angle, reshape=False))
+# 		return sample
 
 class CenterNCrop():
-	"""
-	crop from in_size to out_size around the hand
-	"""
-	def __init__(self, rotation_range=(-45,45), in_size=320, out_size=128):
-		self.rotation_range = rotation_range
-		self.in_size = in_size
-		self.out_size = out_size					  
-
+	def __init__(self, in_shape, out_size, pad_radius=30):
+		self.in_shape = in_shape
+		self.out_size = out_size
+		self.pad_radius = pad_radius
+		
+	@staticmethod
+	def _getCircle(coords):
+		min_ = coords.min(axis=0)
+		max_ = coords.max(axis=0)
+		center = min_ + (max_ - min_) / 2
+		radius = np.sqrt(((max_ - center)**2).sum())
+		return center, radius
+	
+	@staticmethod
+	def circle2BB(circle, pad_radius):
+		cnt, rad = circle
+		rad = rad + pad_radius
+		ymin, ymax = int(cnt[0]-rad), int(cnt[0]+rad)
+		xmin, xmax = int(cnt[1]-rad), int(cnt[1]+rad)
+		return xmin, xmax, ymin, ymax
+	
 	def __call__(self, sample):
-		img, hand, heatmap, mask = sample['img'], sample['hand'], sample['hmap'], sample['mask']
+		"""
+		Input {'img': (*in_shape,3), 'coords': (21,2), *}
+		Output {'img': (out_size,out_size,3), 'coords': (21,2), *}
+		"""
+		img, coords = sample['img'], sample['coords']
+		crcl = self._getCircle(coords)
+		xmin, xmax, ymin, ymax = self.circle2BB(crcl, self.pad_radius)
 		
-		assert hand.fully_visible, "processing a hand that's not fully visible"
-		cnt, rad = hand.getCircle()
-
-		img_cnt = self.in_size // 2
-		scale = 50/rad # to fit it into the cropped image
+		pmin, pmax = 0, 0
+		if xmin < 0 or ymin < 0:
+			pmin = np.abs(min(xmin, ymin))
 		
-		matr = cv2.getRotationMatrix2D(tuple(cnt), 0, scale)
-		matr[:,2] += img_cnt - cnt
-		window = slice(img_cnt - self.out_size//2,
-					   img_cnt + self.out_size//2)
+		if xmax > self.in_shape[0] or ymax > self.in_shape[1]:
+			pmax = max(xmax - self.in_shape[0], ymax - self.in_shape[1])
+		
+		img_pad = np.pad(img, ((pmin, pmax), (pmin, pmax), (0,0)), mode='wrap')
+		
+		if 'mask' in sample:
+			mask = sample['mask']
+			mask_pad = np.pad(mask, ((pmin, pmax), (pmin, pmax)), mode='wrap')
 
-		block = cv2.warpAffine(
-					np.c_[mask, img, heatmap], matr, #done to prevent images from rotatig differently
-					(self.in_size, self.in_size),
-					borderMode=cv2.BORDER_REPLICATE).astype('float32')
-
-		sample['mask'] = block[window, window, :1]
-		sample['img'] = block[window, window, 1:4]
-		sample['hmap'] = block[window, window, 4:]
-
-		connComps = cv2.connectedComponents(
-			(sample['mask']>1).astype('uint8')
-			)[1]
-		label = connComps[self.out_size//2, self.out_size//2]
-		sample['mask'] = (connComps == label).astype('uint8')[:,:,None]
+		xmin += pmin
+		ymin += pmin
+		xmax += pmin
+		ymax += pmin
+		
+		img_crop = img_pad[ymin:ymax,xmin:xmax,:]
+		if 'mask' in sample:
+			mask_crop = mask_pad[ymin:ymax, xmin:xmax]
+		
+		coords += np.c_[pmin, pmin].astype('uint')
+		rescale = self.out_size / (xmax - xmin)
+		img_resized = cv2.resize(img_crop, (self.out_size, self.out_size))
+		if 'mask' in sample:
+			mask_resized = cv2.resize(mask_crop, (self.out_size, self.out_size))
+		coords = coords - np.c_[ymin, xmin]
+		coords = coords*rescale
+		
+		sample['img'] = img_resized
+		sample['coords'] = coords.round().astype('uint8')
+		if 'mask' in sample:
+			sample['mask'] = mask_resized
 		return sample
-
 
 class ToTensor(object):
 	"""
@@ -323,13 +397,12 @@ class ToTensor(object):
 		return sample
 
 def AddMaxCoords(sample):
-    idxs = sample['hmap'].view(sample['hmap'].shape[0], -1).max(dim=-1)[1]
-    xs = idxs % 128
-    ys = idxs // 128
-    coords = torch.stack([ys,xs], dim=-1)
-    sample['coords'] = coords.type(torch.FloatTensor) / 128
-    return sample
-
+	idxs = sample['hmap'].view(sample['hmap'].shape[0], -1).max(dim=-1)[1]
+	xs = idxs % 128
+	ys = idxs // 128
+	coords = torch.stack([ys,xs], dim=-1)
+	sample['coords'] = coords.type(torch.FloatTensor) / 128
+	return sample
 
 class ToNparray(object):
 	"""
