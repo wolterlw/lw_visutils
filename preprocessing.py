@@ -71,22 +71,20 @@ class Hand():
 # =============================== DATASET WRAPPERS ==================================
 
 class HDFDataset():
-	def __init__(self, file_path, dset='train', transform=None):
-		assert dset in {'train','val'}
+	def __init__(self, file_path, transform=None):
 		hdf_file = h5py.File(file_path, 'r')
-		self.X = hdf_file['X_' + dset][()]
-		self.y = hdf_file['y_' + dset][()]
-		# self.masks = hdf_file['Mask_'+ dset][()]
+		self.imgs = hdf_file['img'][()]
+		self.coords = hdf_file['coords'][()]
 		self.trns = transform
+		hdf_file.close()
 	
 	def __len__(self):
-		return len(self.X)
+		return len(self.imgs)
 	
 	def __getitem__(self, idx):
 		sample = {
-			'img': self.X[idx],
-			'coords': self.y[idx],
-			# 'mask': self.masks[idx]
+			'img': self.imgs[idx],
+			'coords': self.coords[idx],
 		}
 		return self.trns(sample) if self.trns else sample
 
