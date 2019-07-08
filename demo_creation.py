@@ -47,7 +47,7 @@ def visualize(frame, coords):
     hand = Hand(coords)
     hand.draw(ax)
     fig.canvas.draw()
-    data = np.array(fig.canvas.renderer._renderer)[34:250,98:330]
+    data = np.array(fig.canvas.renderer._renderer)
     plt.close(fig)
     return data
 
