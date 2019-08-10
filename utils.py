@@ -115,3 +115,32 @@ class HandViz():
             cv2.line(res_img, tuple(self.joints['wrist'][0]),
                               tuple(joint[0]), color, 1)
         return res_img
+
+class HeatmapBatch(nn.Module):
+    """Module that converts coordinates to heatmaps on the GPU"""
+    __constants__ = ['idx', 'kernel', 'bg']
+
+    def __init__(self, batch_size=1, hmap_size=128, sigma=1.5, kernel_size=9, kp_num=21):
+        super(HeatmapBatch, self).__init__()
+        
+        self.pad = kernel_size//2
+        
+        kernel0 = cv2.getGaussianKernel(kernel_size, sigma)
+        kernel0 = torch.from_numpy(kernel0 @ kernel0.T)
+        kernel = torch.zeros(kp_num,kp_num,kernel_size,kernel_size)
+        for i in range(kp_num):
+            kernel[i,i] = kernel0
+        
+        bg = torch.zeros(batch_size, kp_num, hmap_size, hmap_size)
+        idx = torch.arange(batch_size*kp_num)
+        
+        self.register_buffer('idx', idx.long())
+        self.register_buffer('kernel', kernel.float())
+        self.register_buffer('bg', bg.float())
+
+    def forward(self, x):
+        crd = x.view(-1,2)
+        self.bg.zero_()
+        self.bg.flatten(0,1)[self.idx, crd[:,0], crd[:,1]] = 10
+        res = F.conv2d(self.bg, self.kernel, padding=self.pad)
+        return res
