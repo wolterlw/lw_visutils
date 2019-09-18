@@ -132,49 +132,77 @@ class EYTHDataset(Dataset):
 		return self.trns(sample) if self.trns else sample
 
 class RHDDataset(Dataset):
-	"""
-	Versatile RHD dataset abstraction used for preprocessing
-	"""
-	def __init__(self, root_dir, dset='training', transform=None):
-		super(RHDDataset, self).__init__()
-		
-		self.root_dir = Path(root_dir).expanduser() / dset
-		
-		with open(next(self.root_dir.glob("anno*pickle")),'rb') as f:
-			self.anno = pickle.load(f)
-			
-		self.transform = transform
+    """
+    Versatile RHD dataset abstraction used for preprocessing
+    """
+    def __init__(self, root_dir, dset='training', transform=None):
+        super(RHDDataset, self).__init__()
 
-	def __len__(self):
-		return len(self.anno)*2
-	
-	def __getitem__(self, idx):
-		file = idx // 2
-		hand = idx % 2
-		
-		filename = f"{file:05}.png"
-		
-		img_color = (self.root_dir / "color" / filename).as_posix()
-		img_depth = (self.root_dir / "depth" / filename).as_posix()
-		img_mask = (self.root_dir / "mask" / filename).as_posix()
-		
-		slc = slice(hand*21, 21+hand*21)
-		if (self.anno[file]['uv_vis'][slc,:2] < 0).any() or ((self.anno[file]['uv_vis'][slc,:2] > 320).any()):
-			return None
+        self.root_dir = Path(root_dir).expanduser()
+        subsets = [x.name for x in self.root_dir.glob("*") if x.is_dir()] 
+        assert dset in subsets, f"dset shoud be one of {subsets}"
+        self.root_dir /= dset
 
-		sample = {
-			'img': img_color,
-			'mask': img_mask,
-			'depth': img_depth,
-			'uv': self.anno[file]['uv_vis'][slc,:2],
-			'visible': self.anno[file]['uv_vis'][slc,2],
-			'xyz': self.anno[file]['xyz'][slc],
-			'K': self.anno[file]['K']
-		}
+        with open(next(self.root_dir.glob("anno*pickle")),'rb') as f:
+            anno = pickle.load(f)
+        # unpacking hands into separate records
+        # only leaving hands that are fully inside the image
+        hands_valid = [
+            x for i,y in anno.items()\
+            for x in self._split_hands(y, i) if self._valid_hand(x)]
+        
+        # changing back to dict for lookup efficiency
+        self.anno = {
+            i: x for i,x in enumerate(hands_valid)
+        }
+        self.transform = transform
 
-		if self.transform:
-			sample = self.transform(sample)
-		return sample
+    def __len__(self):
+        return len(self.anno)*2
+    
+    @staticmethod
+    def _get_bbox(coords, pad=10):
+        min_c  = coords.min(axis=0) - pad
+        max_c = coords.max(axis=0) + pad
+        return np.clip(np.r_[min_c, max_c].astype('int'), 0, 320)
+    
+    def _split_hands(self, x, index):
+        return [{
+                'filename': f"{index:05}.png",
+                'K': x['K'],
+                'xyz': x['xyz'][slc_own], 
+                'uv_own': x['uv_vis'][slc_own,:2],
+                'box_own': self._get_bbox(
+                    x['uv_vis'][slc_own,:2]
+                ),
+                'box_other': self._get_bbox(
+                    x['uv_vis'][slc_other,:2]
+                )}\
+                for slc_own, slc_other in 
+                            zip((slice(0,21), slice(21,42)),
+                                (slice(21,42), slice(0,21)))
+            ]
+    @staticmethod
+    def _valid_hand(x):
+        return (x['uv_own'] >= 0).all() and (x['uv_own'] < 320).all() 
+
+    def __getitem__(self, idx):
+        record = self.anno[idx] 
+        
+        img_color = (self.root_dir / "color" / record['filename']).as_posix()
+        img_depth = (self.root_dir / "depth" / record['filename']).as_posix()
+        img_mask = (self.root_dir / "mask" / record['filename']).as_posix()
+
+        sample = {
+            'img': img_color,
+            'mask': img_mask,
+            'depth': img_depth,
+        }
+        sample.update(record)
+
+        if self.transform:
+            sample = self.transform(sample)
+        return sample
 
 class GANeratedDataset(Dataset):
 	"""

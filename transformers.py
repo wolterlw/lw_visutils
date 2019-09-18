@@ -22,6 +22,25 @@ class CachedImageReader():
 			sample[k] = self._read(sample[k])
 		return sample
 
+def OtherHandMasker():
+    def f(sample):
+        box_other = sample['box_other']
+        box_own = sample['box_own']
+        
+        mask = np.ones_like(sample['img'][:,:,0])
+        mask[
+            box_other[1]:box_other[3],
+            box_other[0]:box_other[2]
+        ] = 0
+        # making sure current hand is not obscured
+        mask[
+            box_own[1]:box_own[3],
+            box_own[0]:box_own[2]
+        ] = 1
+        sample['img'] = sample['img'] * mask[:,:,None]
+        return sample
+    return f
+
 def DepthDecoder():
 	""" Converts a RGB-coded depth into float valued depth. """
 	def f(sample):
