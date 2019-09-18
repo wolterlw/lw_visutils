@@ -164,23 +164,28 @@ def coordPCK(threshold=5):
 
 
 class SoftArgmax(nn.Module):
-    def __init__(self, img_shape):
-        super().__init__()
-        dim = img_shape
+    __constants__ = ['Wx', 'Wy']
+
+    def __init__(self, dim):
+        super(SoftArgmax, self).__init__()
+
         X,Y = np.meshgrid(
             range(1, dim+1),
             range(1, dim+1)
         )
+
         X = torch.from_numpy(X / dim).type(torch.FloatTensor)
         Y = torch.from_numpy(Y / dim).type(torch.FloatTensor)
+        X.requires_grad = False
+        Y.requires_grad = False
 
-        self.Wx = torch.nn.Parameter(X.view(1,-1))
-        self.Wy = torch.nn.Parameter(Y.view(1,-1))
+        self.register_buffer('Wx', X.view(1,-1))
+        self.register_buffer('Wy', Y.view(1,-1))
         self.d = 1/dim
 
     def forward(self, x):
         sm = F.softmax(
-            x.flatten(start_dim=2), dim=2
+            F.relu(x * 10).flatten(start_dim=2), dim=2 # multiplying by 10 to assure softmax works
         )
         coord_x = (self.Wx.expand_as(sm) * sm).sum(dim=2) - self.d
         coord_y = (self.Wy.expand_as(sm) * sm).sum(dim=2) - self.d
