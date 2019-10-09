@@ -207,12 +207,18 @@ class ToTensor(object):
 	convert ndarrays in sample to Tensors
 	"""
 	def __init__(self, keys=['img','hmap','mask']):
+		self._coords = False
+		if 'coords' in keys:
+			keys.remove('coords')
+			self._coords = True
 		self._keys = keys
 
 	def __call__(self, sample):
 		for k in self._keys:
 			x = sample[k].transpose((2,0,1))
-			sample[k] = torch.from_numpy(x).type(torch.float32)
+			sample[k] = torch.from_numpy(x.astype('float32'))
+		if self._coords:
+			sample['coords'] = torch.from_numpy(sample['coords'].astype('float32'))
 		return sample
 
 def AddMaxCoords(sample):
@@ -242,3 +248,38 @@ def Resize(out_shape, keys=['img','mask','depth']):
 			sample[k] = cv2.resize(sample[k], out_shape)
 		return sample
 	return f
+
+class RandomizeCoords():
+	def __init__(self, hmap_shape, noise_max=10):
+		self._idx = np.arange(hmap_shape[0])
+		self._max = hmap_shape[1] * 2
+		self._noise = noise_max
+		self._noise_shape = (hmap_shape[0], 2)
+
+	def __call__(self, sample):
+		op = np.random.randint(3)
+		if op == 0:
+			np.random.shuffle(self._idx)
+			sample['noisy_coords'] = sample['coords'][self._idx]
+			return sample
+		if op == 1:
+			noise = np.random.uniform(-self._noise, self._noise, 
+				self._noise_shape)
+			sample['noisy_coords'] = np.clip(
+				sample['coords'] + noise,
+				0, self._max).astype('float32')
+
+			return sample
+		else:
+			sample['noisy_coords'] = np.random.uniform(
+				0, self._max, self._noise_shape).astype('float32')
+			return sample
+
+class RemapKeys():
+	def __init__(self, map_=[('img','img'), ('coords', 'coords')]):
+		assert type(map_) is list, "map_ should be in form [(from_key, to_key),]"
+		assert type(map_[0]) is tuple, "map_ should be in form [(from_key, to_key),]"
+		self._map = map_
+
+	def __call__(self, sample):
+		return {k_new: sample[k_old] for k_old, k_new in self._map}

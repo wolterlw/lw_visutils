@@ -65,10 +65,10 @@ from torch.utils.data import Dataset
 # =============================== DATASET WRAPPERS ==================================
 
 class HDFDataset():
-	def __init__(self, file_path, transform=None):
+	def __init__(self, file_path, transform=None, lim_samples=None):
 		hdf_file = h5py.File(file_path, 'r')
-		self.imgs = hdf_file['img'][()]
-		self.coords = hdf_file['coords'][()]
+		self.imgs = hdf_file['img'][:lim_samples]
+		self.coords = hdf_file['coords'][:lim_samples]
 		self.trns = transform
 		hdf_file.close()
 	
@@ -77,8 +77,8 @@ class HDFDataset():
 	
 	def __getitem__(self, idx):
 		sample = {
-			'img': self.imgs[idx],
-			'coords': self.coords[idx],
+			'img': self.imgs[idx].astype('float32'),
+			'coords': self.coords[idx].astype('float32'),
 		}
 		return self.trns(sample) if self.trns else sample
 

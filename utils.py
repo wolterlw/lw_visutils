@@ -1,8 +1,10 @@
 import torch
 import torchvision.utils as vutils
-from tensorboardX import SummaryWriter
 from collections import deque
 from torch.optim import Optimizer
+import torch.nn as nn
+from cv2 import getGaussianKernel
+import torch.nn.functional as F
 
 class AverageMeter(object):
     """Keeps an average of a subsequence of certain size
@@ -20,40 +22,6 @@ class AverageMeter(object):
 
     def avg(self):
         return sum(self.vals)/len(self.vals) if len(self.vals) else 0
-
-class Saver():
-    def __init__(self, params_path='./', better=lambda x,y: x>y):
-        self.prev_best = 0
-        self.better = better
-        self.params_path = params_path
-    
-    def save(self, model, metric):
-        if self.better(metric, self.prev_best):
-            self.prev_best = metric
-            torch.save(model.state_dict(),
-                       self.params_path + f"weights_{metric:.4f}.pt")
-
-class TBhook():
-    def __init__(self, launch_dir):
-        self.writer = SummaryWriter(launch_dir)
-        
-    def write_graph(self, model):
-        zeros = torch.zeros(1,3,128,128,dtype=torch.float32).cuda()
-        self.writer.add_graph(model, zeros, verbose=False)
-        
-    def write_scalars(self, loss, metrics, global_step):
-        self.writer.add_scalars('data/metrics', metrics, global_step)
-        self.writer.add_scalars('data/losses', loss, global_step)        
-    
-    def write_img(self, img, name='test_image', step=0):
-        self.writer.add_image('images/'+name, img, step)
-        
-    def write_hmaps(self, hmaps, name='test_hmap', step=0):
-        grid = vutils.make_grid(hmaps.view(-1,1,128,128), normalize=True)
-        self.writer.add_image('images/'+name, grid, step)
-
-    def close(self):
-        self.writer.close()
 
 class DivergenceLoss():
 
@@ -102,7 +70,8 @@ class HandViz():
             'ring': self.array[13:17], # cyan
             'pinky': self.array[17:21], # magenta
         }
-        self.colors = [(0,0,0),(255,0,0),(0,255,0),(0,0,255),(0,255,255),(255,0,255)]
+        self.colors = [(  0,  0,  0),(255,  0,  0),(  0,255,  0),
+                       (  0,  0,255),(  0,255,255),(255,  0,255)]
     
     def draw(self, img):
         assert type(img) is np.ndarray
@@ -116,22 +85,54 @@ class HandViz():
                               tuple(joint[0]), color, 1)
         return res_img
 
+class ImgVisualizer():
+    def __init__(self, writer):
+        self.writer = writer
+
+    @staticmethod
+    def combine_hmaps(hmap_gt, hmap0, hmap1):
+        stacked = torch.stack([hmap_gt, hmap0, hmap1], dim=0).transpose(0,1)
+        grid = vutils.make_grid(
+            stacked, normalize=True, 
+            nrow=7, pad_value=1
+        ).numpy().transpose(1,2,0)
+        return grid
+
+    def write(self, img, hmap_gt, hmap_pred, step, img_idx=0, valid=False):
+        gt = hmap_gt[img_idx].detach().squeeze().cpu()
+        hmap0 = hmap_pred[0][img_idx].squeeze().detach().cpu()
+        hmap1 = hmap_pred[1][img_idx].squeeze().detach().cpu()
+        inp_img = img[img_idx].detach().cpu()
+
+        grid = self.combine_hmaps(gt, hmap0, hmap1)
+
+        log = {
+            "img": [self.writer.Image(inp_img)],
+            "heatmaps": [self.writer.Image(grid)]
+            }
+        if valid:
+            log = {k + "_val": v for k,v in log.items()}
+        self.writer.log(log)
+
 class HeatmapBatch(nn.Module):
     """Module that converts coordinates to heatmaps on the GPU"""
     __constants__ = ['idx', 'kernel', 'bg']
 
-    def __init__(self, batch_size=1, hmap_size=128, sigma=1.5, kernel_size=9, kp_num=21):
+    def __init__(self, batch_size=1, hmap_size=128, 
+                sigma=1.5, kernel_size=9, kp_num=21):
         super(HeatmapBatch, self).__init__()
         
         self.pad = kernel_size//2
         
-        kernel0 = cv2.getGaussianKernel(kernel_size, sigma)
+        kernel0 = getGaussianKernel(kernel_size, sigma)
         kernel0 = torch.from_numpy(kernel0 @ kernel0.T)
+        self._gauss_val = 1 / kernel0.max()
         kernel = torch.zeros(kp_num,kp_num,kernel_size,kernel_size)
         for i in range(kp_num):
             kernel[i,i] = kernel0
+
         
-        bg = torch.zeros(batch_size, kp_num, hmap_size, hmap_size)
+        bg = torch.zeros((batch_size, kp_num, hmap_size, hmap_size))
         idx = torch.arange(batch_size*kp_num)
         
         self.register_buffer('idx', idx.long())
@@ -140,7 +141,7 @@ class HeatmapBatch(nn.Module):
 
     def forward(self, x):
         crd = x.view(-1,2)
-        self.bg.zero_()
-        self.bg.flatten(0,1)[self.idx, crd[:,0], crd[:,1]] = 10
-        res = F.conv2d(self.bg, self.kernel, padding=self.pad)
+        self.bg.normal_(std=0.01)
+        self.bg.flatten(0,1)[self.idx, crd[:,1], crd[:,0]] = self._gauss_val
+        res = F.relu(F.conv2d(self.bg, self.kernel, padding=self.pad))
         return res

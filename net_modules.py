@@ -191,8 +191,8 @@ class SoftArgmax(nn.Module):
         coord_y = (self.Wy.expand_as(sm) * sm).sum(dim=2) - self.d
 
         coords = torch.stack([
-            coord_y,
-            coord_x],
+            coord_x,
+            coord_y],
             dim = -1)
         return coords
 
