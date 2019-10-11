@@ -1,4 +1,5 @@
 from functools import lru_cache
+from random import randint
 
 from imageio import imread
 
@@ -91,6 +92,39 @@ class Coords2Hmap():
 		
 		sample['hmap'] = cv2.GaussianBlur(hmap, (35, 35), self.sigma)
 		return sample
+
+class AffineTransform():
+    def __init__(self, img_size=(256,256),
+                 scale_min=0.8, scale_max=1.3,
+                 translation_max=45):
+        self.tmax = translation_max
+        self.scale = (int(scale_min*10), int(scale_max*10))
+        self.img_size = img_size
+        self.center = (img_size[0]//2, img_size[1]//2)
+        self.crd_max = max(img_size)-1
+    
+    @staticmethod
+    def _pad1(M):
+        return np.pad(
+            M, ((0,0),(0,1)),
+            mode='constant', 
+            constant_values=1)
+
+    def __call__(self, sample):
+        M = cv2.getRotationMatrix2D(
+                self.center, randint(-90,90),
+                randint(*self.scale) / 10)
+        M[:,2:] += np.random.uniform(-self.tmax, self.tmax, (2,1))
+        sample['img'] = cv2.warpAffine(
+            sample['img'],
+            M, self.img_size,
+            borderMode=cv2.BORDER_REFLECT)
+        Mpad = self._pad1(M.T)
+        Mpad[:2,2:] = 0
+        
+        crd_t = self._pad1(sample['coords']) @ Mpad
+        sample['coords'] = np.clip(crd_t[:,:2], 1, self.crd_max)
+        return sample
 
 class CenterNCrop():
 	def __init__(self, in_shape, out_size, pad_radius=30):
