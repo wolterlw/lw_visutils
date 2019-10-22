@@ -100,8 +100,8 @@ class ImgVisualizer():
 
     def write(self, img, hmap_gt, hmap_pred, step, img_idx=0, valid=False):
         gt = hmap_gt[img_idx].detach().squeeze().cpu()
-        hmap0 = hmap_pred[0][img_idx].squeeze().detach().cpu()
-        hmap1 = hmap_pred[1][img_idx].squeeze().detach().cpu()
+        hmap0 = hmap_pred['hmap0'][img_idx].squeeze().detach().cpu()
+        hmap1 = hmap_pred['hmap1'][img_idx].squeeze().detach().cpu()
         inp_img = img[img_idx].detach().cpu()
 
         grid = self.combine_hmaps(gt, hmap0, hmap1)

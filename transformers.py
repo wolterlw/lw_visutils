@@ -292,6 +292,7 @@ class RandomizeCoords():
 
 	def __call__(self, sample):
 		op = np.random.randint(3)
+		sample['coords'] = sample['coords'].astype('float32')
 		if op == 0:
 			np.random.shuffle(self._idx)
 			sample['noisy_coords'] = sample['coords'][self._idx]
