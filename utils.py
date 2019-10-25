@@ -57,7 +57,7 @@ class DivergenceLoss():
         Returns:
             torch floatTensor: calculated JS divergence
         """
-        return self._js(y_pred, y_true)
+        return self._js(F.relu(y_pred), F.relu(y_true))
 
 class HandViz():
     def __init__(self, joint_array, img_dim=128):
