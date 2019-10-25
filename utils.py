@@ -138,10 +138,16 @@ class HeatmapBatch(nn.Module):
         self.register_buffer('idx', idx.long())
         self.register_buffer('kernel', kernel.float())
         self.register_buffer('bg', bg.float())
+        self.noise_mean = 0
+        self.noise_std = 0.01
+
+    def set_noise(self, mean, std):
+        self.noise_mean = mean
+        self.noise_std = std
 
     def forward(self, x):
         crd = x.view(-1,2)
-        self.bg.normal_(std=0.01)
+        self.bg.normal_(self.noise_mean, self.noise_std)
         self.bg.flatten(0,1)[self.idx, crd[:,1], crd[:,0]] = self._gauss_val
         res = F.relu(F.conv2d(self.bg, self.kernel, padding=self.pad))
         return res
