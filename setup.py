@@ -4,11 +4,11 @@ with open("README.md", "r") as fh:
     long_description = fh.read()
 
 setuptools.setup(
-    name="net_modules",
+    name="lw_visutils",
     version="0.0.1",
     author="wolterlw",
     author_email="wolterlentin@gmail.com",
-    description="reusable PyTorch NN modules",
+    description="reusable code for computer vision tasks",
     long_description=long_description,
     long_description_content_type="text/markdown",
     url="https://github.com/wolterlw/net_modules/",
@@ -19,6 +19,7 @@ setuptools.setup(
    'scipy',
    'tqdm',
    'torch>1.3',
+   'imageio',
     ],
     classifiers=[
         "Programming Language :: Python :: 3",
