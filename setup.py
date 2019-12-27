@@ -4,7 +4,7 @@ with open("README.md", "r") as fh:
     long_description = fh.read()
 
 setuptools.setup(
-    name="python_world",
+    name="net_modules",
     version="0.0.1",
     author="wolterlw",
     author_email="wolterlentin@gmail.com",
