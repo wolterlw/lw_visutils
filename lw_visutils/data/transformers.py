@@ -1,5 +1,6 @@
 from functools import lru_cache
 from random import randint
+from warnings import showwarning
 
 from imageio import imread
 
@@ -126,76 +127,60 @@ class AffineTransform():
         sample['coords'] = np.clip(crd_t[:,:2], 1, self.crd_max)
         return sample
 
-class CenterNCrop():
-    def __init__(self, in_shape, out_size, pad_radius=30):
-        self.in_shape = in_shape
-        self.out_size = out_size
-        self.pad_radius = pad_radius
+class AddBboxCentered():
+    def __init__(self, kp_center=8, scale=1.1):
+        self.kp_cnt = 12
+        self.scale = 1.1
+        self.b_vec = np.r_[[
+            [-1,-1],
+            [ 1,-1],
+            [ 1, 1],
+            [-1, 1]
+        ]]
         
-    @staticmethod
-    def _getCircle(coords):
-        min_ = coords.min(axis=0)
-        max_ = coords.max(axis=0)
-        center = min_ + (max_ - min_) / 2
-        radius = np.sqrt(((max_ - center)**2).sum())
-        return center, radius
-    
-    @staticmethod
-    def circle2BB(circle, pad_radius):
-        cnt, rad = circle
-        rad = rad + pad_radius
-        ymin, ymax = int(cnt[0]-rad), int(cnt[0]+rad)
-        xmin, xmax = int(cnt[1]-rad), int(cnt[1]+rad)
-        return xmin, xmax, ymin, ymax
-    
     def __call__(self, sample):
-        """
-        Input {'img': (*in_shape,3), 'coords': (21,2), *}
-        Output {'img': (out_size,out_size,3), 'coords': (21,2), *}
-        """
-        img, coords = sample['img'], sample['coords']
-        crcl = self._getCircle(coords)
-        xmin, xmax, ymin, ymax = self.circle2BB(crcl, self.pad_radius)
-        
-        pmin, pmax = 0, 0
-        if xmin < 0 or ymin < 0:
-            pmin = np.abs(min(xmin, ymin))
-        
-        if xmax > self.in_shape[0] or ymax > self.in_shape[1]:
-            pmax = max(xmax - self.in_shape[0], ymax - self.in_shape[1])
-
-        sample['yx_min_max'] = np.r_[[ymin, xmin, ymax, xmax]]
-        
-        img_pad = np.pad(img, ((pmin, pmax), (pmin, pmax), (0,0)), mode='wrap')
-        
-        if 'mask' in sample:
-            mask = sample['mask']
-            mask_pad = np.pad(mask, ((pmin, pmax), (pmin, pmax)), mode='wrap')
-
-        xmin += pmin
-        ymin += pmin
-        xmax += pmin
-        ymax += pmin
-        
-        img_crop = img_pad[ymin:ymax,xmin:xmax,:]
-        if 'mask' in sample:
-            mask_crop = mask_pad[ymin:ymax, xmin:xmax]
-        
-        coords += np.c_[pmin, pmin].astype('uint')
-        rescale = self.out_size / (xmax - xmin)
-        img_resized = cv2.resize(img_crop, (self.out_size, self.out_size))
-        if 'mask' in sample:
-            mask_resized = cv2.resize(mask_crop, (self.out_size, self.out_size))
-        coords = coords - np.c_[ymin, xmin]
-        coords = coords*rescale
-        
-        sample['img'] = img_resized
-        sample['coords'] = coords.round().astype('uint8')
-        if 'mask' in sample:
-            sample['mask'] = mask_resized
+        crd = sample['coords'].astype('float32')
+        center = crd[self.kp_cnt]
+        max_dist = np.linalg.norm(crd - center, axis=1).max()
+        box = center + self.b_vec * max_dist * self.scale
+        sample['bbox'] = box.astype('float32')
         return sample
 
-class CropLikeGoogle():
+class CropByBbox():
+    def __init__(self, out_size=256):
+        assert type(out_size) is int
+        self.out_size = (out_size, out_size)
+        self.target = np.r_[[
+            [       0,        0],
+            [out_size,        0],
+            [out_size, out_size],
+            [0       , out_size]
+        ]].astype('float32')
+    
+    @staticmethod
+    def warpCoords(crd, M):
+        crd_pad = np.pad(crd, ((0,0), (0,1)), constant_values=1)
+        M_pad = np.pad(M, ((0,1), (0,0)))
+        M_pad[2,2] = 1
+        crd_new = crd_pad @ M_pad.T
+        assert (crd_new[:,2] == 1).all()
+        return crd_new[:,:2]
+    
+    def __call__(self, sample):
+        src = sample['bbox'].astype('float32')
+        M = cv2.getAffineTransform(src[:3], self.target[:3])
+        img_new = cv2.warpAffine(sample['img'], M, self.out_size)
+        crd_new = self.warpCoords(sample['coords'], M)
+
+        if (crd_new < 0).any() or (crd_new > self.out_size).any():
+            showwarning("coordinates our of bounds", RuntimeWarning, "transformers.py", 176)
+        
+        sample['img'] = img_new
+        sample['coords'] = crd_new
+        sample['bbox'] = self.target
+        return sample
+
+class GoogleStyleBbox():
     def __init__(self, out_size, box_enlarge=1.5, rand=False):
         self.out_size = out_size
         self.box_enlarge = box_enlarge
@@ -227,10 +212,6 @@ class CropLikeGoogle():
             [source[2] - source[1] + source[0]],
         ].reshape(-1,2)
         return bbox
-    
-    @staticmethod
-    def _pad1(x):
-        return np.pad(x, ((0,0),(0,1)), constant_values=1, mode='constant')
 
     def __call__(self, sample):
         """
@@ -247,47 +228,7 @@ class CropLikeGoogle():
 
         source = self.get_triangle(coords_0[0], coords_0[12], side * self.box_enlarge)
 
-        crd = self._pad1(coords_0)
-        scale = np.random.uniform(0.8,1)
-        
-        Mtr = cv2.getAffineTransform(
-                source,
-                self._target_triangle
-            )
-            
-        Mtr = self._pad1(Mtr.T).T
-        Mtr[2:,:2] = 0
-        
-        scale = 1
-        
-        for i in range(10):
-            if self.rand:
-                rot = np.random.randint(-15,15)
-            else:
-                rot = 0
-
-            R = cv2.getRotationMatrix2D((128,128), rot, scale)
-            R = self._pad1(R.T).T
-            R[2:,:2] = 0
-            R[:2,2] += np.random.uniform(-10, 10)
-            M = R @ Mtr
-
-            coords = (crd @ M.T)
-            
-            if (coords <= 256).all() and (coords >= 0).all():
-                break
-            else:
-                scale *= 0.9
-                
-            
-        img_landmark = cv2.warpAffine(
-                img, M[:2], (256,256)
-                )
-        
-        sample['coords'] = coords[:,:2]
-        sample['img'] = img_landmark
-
-        assert (coords <= 256).all() and (coords >= 0).all(), coords
+        sample['bbox'] = self.triangle_to_bbox(source)
         return sample
 
 class RandomCropMask():
