@@ -13,7 +13,7 @@ class CachedImageReader():
     @staticmethod
     @lru_cache(maxsize=6)
     def _read(path):
-        return imread(path)
+        return cv2.imread(path)[:,:,::-1]
         
     def __init__(self, keys=['img','mask','depth']):
         self.keys = keys
